@@ -1,0 +1,80 @@
+#
+# MDEV-34817 Performance schema does not clear package routines
+#
+SET sql_mode=ORACLE;
+CREATE DATABASE mdev34817_db;
+CREATE PACKAGE mdev34817_db.pkg1 AS
+PROCEDURE p1();
+END;
+$$
+CREATE PACKAGE BODY mdev34817_db.pkg1 AS
+PROCEDURE p1() AS
+BEGIN
+NULL;
+END;
+END;
+$$
+CALL mdev34817_db.pkg1.p1();
+# Testing DROP DATABASE
+DROP DATABASE mdev34817_db;
+SELECT object_type, object_schema, object_name
+FROM performance_schema.events_statements_summary_by_program
+WHERE LOWER(object_schema)='mdev34817_db';
+object_type	object_schema	object_name
+PACKAGE BODY	mdev34817_db	pkg1
+# Testing DROP PACKAGE BODY
+CREATE DATABASE mdev34817_db;
+CREATE PACKAGE mdev34817_db.pkg1 AS
+PROCEDURE p1();
+END;
+$$
+CREATE PACKAGE BODY mdev34817_db.pkg1 AS
+PROCEDURE p1() AS
+BEGIN
+NULL;
+END;
+END;
+$$
+CALL mdev34817_db.pkg1.p1();
+DROP PACKAGE BODY mdev34817_db.pkg1;
+SELECT object_type, object_schema, object_name
+FROM performance_schema.events_statements_summary_by_program
+WHERE LOWER(object_schema)='mdev34817_db';
+object_type	object_schema	object_name
+PACKAGE	mdev34817_db	pkg1
+DROP DATABASE mdev34817_db;
+#
+# Multi-connection test case for MDEV-34817
+#
+connect  con1, localhost, root,,;
+connect  con2, localhost, root,,;
+connection con1;
+SET sql_mode=ORACLE;
+CREATE DATABASE mdev34817_db;
+CREATE PACKAGE mdev34817_db.pkg1 AS
+PROCEDURE p1();
+END;
+$$
+CREATE PACKAGE BODY mdev34817_db.pkg1 AS
+PROCEDURE p1() AS
+BEGIN
+NULL;
+END;
+END;
+$$
+CALL mdev34817_db.pkg1.p1();
+connection con2;
+DROP DATABASE mdev34817_db;
+connection con1;
+SELECT object_type, object_schema, object_name
+FROM performance_schema.events_statements_summary_by_program
+WHERE LOWER(object_schema)='mdev34817_db';
+object_type	object_schema	object_name
+PACKAGE	mdev34817_db	pkg1
+PACKAGE BODY	mdev34817_db	pkg1
+disconnect con1;
+disconnect con2;
+connection default;
+#
+# End of 10.11 tests
+#

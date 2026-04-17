@@ -58,7 +58,7 @@ table_esms_by_program::m_share=
   sizeof(PFS_simple_index),
   &m_table_lock,
   { C_STRING_WITH_LEN("CREATE TABLE events_statements_summary_by_program ("
-                      "OBJECT_TYPE enum('EVENT', 'FUNCTION', 'PROCEDURE', 'TABLE', 'TRIGGER') comment 'Object type for which the summary is generated.',"
+                      "OBJECT_TYPE enum('EVENT', 'FUNCTION', 'PROCEDURE', 'TABLE', 'TRIGGER', 'TEMPORARY_TABLE', 'BACKUP', 'SCHEMA', 'PACKAGE', 'PACKAGE BODY', 'USER_LEVEL_LOCK') comment 'Object type for which the summary is generated.',"
                       "OBJECT_SCHEMA varchar(64) NOT NULL comment 'The schema of the object for which the summary is generated.',"
                       "OBJECT_NAME varchar(64) NOT NULL comment 'The name of the object for which the summary is generated.',"
                       "COUNT_STAR bigint(20) unsigned NOT NULL comment 'The number of summarized events (from events_statements_current). This value includes all events, whether timed or nontimed.',"

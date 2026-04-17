@@ -1087,10 +1087,98 @@ sp_returns_type(THD *thd, String &result, const sp_head *sp)
 }
 
 
+#ifdef HAVE_PSI_SP_INTERFACE
+class Silence_all_errors : public Internal_error_handler
+{
+public:
+  bool handle_condition(THD *thd, uint sql_errno, const char* sqlstate,
+                        Sql_condition::enum_warning_level *level,
+                        const char* msg, Sql_condition ** cond_hdl) override
+  {
+    *cond_hdl= NULL;
+    return true;
+  }
+};
+
+class Sp_handler_helper : public Sp_handler {
+public:
+  using Sp_handler::db_load_routine;
+};
+
 /**
+  Drop statistics for all package sub-routines from performance schema.
+  @param thd    Thread context.
+  @param table  A pointer to the opened mysql.proc table,
+                positioned to the record to be deleted.
+*/
+static void sp_psi_drop_package_routines(THD *thd, TABLE *table)
+{
+  sp_head *sp= NULL;
+  st_sp_chistics chistics;
+  AUTHID definer;
+  longlong created, modified;
+  LEX_CSTRING params, returns, body;
+  Stored_program_creation_ctx *creation_ctx;
+  sql_mode_t sql_mode;
+  LEX_CSTRING db, name;
+
+  Silence_all_errors errors_handler;
+  thd->push_internal_handler(&errors_handler);
+
+  if (chistics.read_from_mysql_proc_row(thd, table) ||
+      definer.read_from_mysql_proc_row(thd, table))
+    goto end;
+
+  table->field[MYSQL_PROC_FIELD_PARAM_LIST]->val_str_nopad(thd->mem_root, &params);
+  table->field[MYSQL_PROC_FIELD_RETURNS]->val_str_nopad(thd->mem_root, &returns);
+  table->field[MYSQL_PROC_FIELD_BODY]->val_str_nopad(thd->mem_root, &body);
+
+  created= table->field[MYSQL_PROC_FIELD_CREATED]->val_int();
+  modified= table->field[MYSQL_PROC_FIELD_MODIFIED]->val_int();
+  sql_mode= (sql_mode_t) table->field[MYSQL_PROC_FIELD_SQL_MODE]->val_int();
+
+  table->field[MYSQL_PROC_FIELD_DB]->val_str_nopad(thd->mem_root, &db);
+  table->field[MYSQL_PROC_FIELD_NAME]->val_str_nopad(thd->mem_root, &name);
+
+  {
+    sp_name spn(&db, &name, true);
+    if (!(creation_ctx= Stored_routine_creation_ctx::load_from_db(thd, &spn, table)))
+      goto end;
+
+    if (((const Sp_handler_helper&)sp_handler_package_body).
+        db_load_routine(thd, &spn, &sp, sql_mode, params,
+                        returns, body, chistics, definer,
+                        created, modified, NULL,
+                        creation_ctx) == SP_OK)
+    {
+      sp_package *pkg= sp->get_package();
+      if (pkg)
+      {
+        List_iterator<LEX> it(pkg->m_routine_implementations);
+        for (LEX *lex; (lex= it++); )
+        {
+          sp_head *sub= lex->sphead;
+          if (sub)
+          {
+            MYSQL_DROP_SP(sub->m_handler->type(), db.str,
+                          static_cast<uint>(db.length),
+                          sub->m_name.str, static_cast<uint>(sub->m_name.length));
+          }
+        }
+      }
+      sp_head::destroy(sp);
+    }
+  }
+end:
+  thd->pop_internal_handler();
+}
+#endif
+
+
+/*
   Delete the record for the stored routine object from mysql.proc,
-  which is already opened, locked, and positioned to the record with the
-  record to be deleted.
+  which is already opened, locked, and positioned to the record with
+  the record to be deleted.
 
   The operation deletes the record for the current record in "table"
   and invalidates the stored-routine cache.
@@ -1101,15 +1189,21 @@ sp_returns_type(THD *thd, String &result, const sp_head *sp)
 
   @returns      Error code.
   @return       SP_OK on success, or SP_DELETE_ROW_FAILED on error.
-  used to indicate about errors.
 */
-
 int
 Sp_handler::sp_drop_routine_internal(THD *thd,
                                      const Database_qualified_name *name,
                                      TABLE *table) const
 {
   DBUG_ENTER("sp_drop_routine_internal");
+
+#ifdef HAVE_PSI_SP_INTERFACE
+  if (type() == SP_TYPE_PACKAGE_BODY)
+    sp_psi_drop_package_routines(thd, table);
+  /* Drop statistics for this stored program from performance schema. */
+  MYSQL_DROP_SP(type(), name->m_db.str, static_cast<uint>(name->m_db.length),
+                        name->m_name.str, static_cast<uint>(name->m_name.length));
+#endif
 
   if (table->file->ha_delete_row(table->record[0]))
     DBUG_RETURN(SP_DELETE_ROW_FAILED);
@@ -1126,11 +1220,9 @@ Sp_handler::sp_drop_routine_internal(THD *thd,
   sp_head *sp;
   sp_cache **spc= get_cache(thd);
   DBUG_ASSERT(spc);
+
   if ((sp= sp_cache_lookup(spc, name)))
     sp_cache_remove(spc, &sp);
-  /* Drop statistics for this stored program from performance schema. */
-  MYSQL_DROP_SP(type(), name->m_db.str, static_cast<uint>(name->m_db.length),
-                        name->m_name.str, static_cast<uint>(name->m_name.length));
   DBUG_RETURN(SP_OK);
 }
 
@@ -1849,13 +1941,36 @@ sp_drop_db_routines(THD *thd, const char *db)
   table->field[MYSQL_PROC_FIELD_DB]->store(db, db_length, system_charset_info);
   key_len= table->key_info->key_part[0].store_length;
   table->field[MYSQL_PROC_FIELD_DB]->get_key_image(keybuf, key_len, Field::itRAW);
-
   ret= SP_OK;
   if (table->file->ha_index_init(0, 1))
   {
     ret= SP_KEY_NOT_FOUND;
     goto err_idx_init;
   }
+
+#ifdef HAVE_PSI_SP_INTERFACE
+  /*
+    First pass: drop statistics for all routines and their sub-routines
+    from performance schema. We do this in a separate pass while all rows
+    are still in mysql.proc, so package bodies can find their specs and
+    correctly parse sub-routines.
+  */
+  if (!table->file->ha_index_read_map(table->record[0], keybuf, (key_part_map)1,
+                                      HA_READ_KEY_EXACT))
+  {
+    do
+    {
+      LEX_CSTRING proc_name;
+      table->field[MYSQL_PROC_FIELD_NAME]->val_str_nopad(thd->mem_root, &proc_name);
+      enum_sp_type sp_type= (enum_sp_type) table->field[MYSQL_PROC_MYSQL_TYPE]->val_int();
+      /* Drop statistics for this stored program from performance schema. */
+      MYSQL_DROP_SP(sp_type, db, static_cast<uint>(db_length), proc_name.str, static_cast<uint>(proc_name.length));
+      if (sp_type == SP_TYPE_PACKAGE_BODY)
+        sp_psi_drop_package_routines(thd, table);
+    } while (!table->file->ha_index_next_same(table->record[0], keybuf, key_len));
+  }
+#endif
+
   if (!table->file->ha_index_read_map(table->record[0], keybuf, (key_part_map)1,
                                       HA_READ_KEY_EXACT))
   {
@@ -1867,15 +1982,6 @@ sp_drop_db_routines(THD *thd, const char *db)
       if (! table->file->ha_delete_row(table->record[0]))
       {
 	deleted= TRUE;		/* We deleted something */
-#ifdef HAVE_PSI_SP_INTERFACE
-        String buf;
-        // the following assumes MODE_PAD_CHAR_TO_FULL_LENGTH being *unset*
-        String *name= table->field[MYSQL_PROC_FIELD_NAME]->val_str(&buf);
-
-        enum_sp_type sp_type= (enum_sp_type) table->field[MYSQL_PROC_MYSQL_TYPE]->ptr[0];
-        /* Drop statistics for this stored program from performance schema. */
-        MYSQL_DROP_SP(sp_type, db, static_cast<uint>(db_length), name->ptr(), name->length());
-#endif
       }
       else
       {
