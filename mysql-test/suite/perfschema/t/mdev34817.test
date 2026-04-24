@@ -1,0 +1,29 @@
+--source include/have_perfschema.inc
+
+SET sql_mode=ORACLE;
+
+CREATE DATABASE mdev34817_db;
+
+--delimiter $$
+
+CREATE PACKAGE mdev34817_db.pkg1 AS
+  PROCEDURE p1;
+END;
+$$
+
+CREATE PACKAGE BODY mdev34817_db.pkg1 AS
+  PROCEDURE p1 AS
+  BEGIN
+    NULL;
+  END;
+END;
+$$
+
+--delimiter ;
+
+CALL mdev34817_db.pkg1.p1;
+
+DROP DATABASE mdev34817_db;
+
+SELECT count(*) FROM performance_schema.events_statements_summary_by_program
+WHERE object_schema='mdev34817_db';

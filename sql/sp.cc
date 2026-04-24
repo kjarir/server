@@ -1104,6 +1104,32 @@ sp_returns_type(THD *thd, String &result, const sp_head *sp)
   used to indicate about errors.
 */
 
+#ifdef HAVE_PSI_SP_INTERFACE
+static void
+sp_psi_drop_package_routines(THD *thd, const char *db, size_t db_length,
+                             const LEX_CSTRING &name)
+{
+  LEX_CSTRING ldb= {db, db_length};
+  sp_name spn(&ldb, &name, true);
+  sp_head *ph= sp_cache_lookup(&thd->sp_package_body_cache, &spn);
+  if (ph)
+  {
+    sp_package *pkg= ph->get_package();
+    if (pkg)
+    {
+      List_iterator<LEX> it(pkg->m_routine_implementations);
+      for (LEX *lex; (lex= it++); )
+      {
+        sp_head *sub= lex->sphead;
+        MYSQL_DROP_SP(sub->m_handler->type(), db, static_cast<uint>(db_length),
+                      sub->m_name.str, static_cast<uint>(sub->m_name.length));
+      }
+    }
+  }
+}
+#endif
+
+
 int
 Sp_handler::sp_drop_routine_internal(THD *thd,
                                      const Database_qualified_name *name,
@@ -1131,6 +1157,11 @@ Sp_handler::sp_drop_routine_internal(THD *thd,
   /* Drop statistics for this stored program from performance schema. */
   MYSQL_DROP_SP(type(), name->m_db.str, static_cast<uint>(name->m_db.length),
                         name->m_name.str, static_cast<uint>(name->m_name.length));
+#ifdef HAVE_PSI_SP_INTERFACE
+  if (type() == SP_TYPE_PACKAGE_BODY)
+    sp_psi_drop_package_routines(thd, name->m_db.str, name->m_db.length,
+                                 name->m_name);
+#endif
   DBUG_RETURN(SP_OK);
 }
 
@@ -1875,6 +1906,11 @@ sp_drop_db_routines(THD *thd, const char *db)
         enum_sp_type sp_type= (enum_sp_type) table->field[MYSQL_PROC_MYSQL_TYPE]->ptr[0];
         /* Drop statistics for this stored program from performance schema. */
         MYSQL_DROP_SP(sp_type, db, static_cast<uint>(db_length), name->ptr(), name->length());
+        if (sp_type == SP_TYPE_PACKAGE_BODY)
+        {
+          LEX_CSTRING l_name= {name->ptr(), name->length()};
+          sp_psi_drop_package_routines(thd, db, db_length, l_name);
+        }
 #endif
       }
       else
