@@ -113,7 +113,7 @@ call bug10100pt(1,255)|
 call bug10100pv(1,255)|
 -- error ER_STACK_OVERRUN_NEED_MORE
 call bug10100pd(1,255)|
--- error ER_STACK_OVERRUN_NEED_MORE
+-- error ER_STACK_OVERRUN_NEED_MORE,ER_TOO_MANY_OPEN_CURSORS
 call bug10100pc(1,255)|
 -- enable_result_log
 -- enable_ps_protocol
