@@ -10117,7 +10117,29 @@ int Field_bit::store(const char *from, size_t length, CHARSET_INFO *cs)
 
 int Field_bit::store(double nr)
 {
-  return Field_bit::store((longlong) nr, FALSE);
+  DBUG_ASSERT(marked_for_write_or_computed());
+  int error= 0;
+  ulonglong max_val= (field_length == 64) ? ULLONG_MAX : (((ulonglong) 1 << field_length) - 1);
+  ulonglong value;
+
+  if (nr < 0.0)
+  {
+    set_warning(Sql_condition::WARN_LEVEL_WARN, ER_WARN_DATA_OUT_OF_RANGE, 1);
+    value= 0;
+    error= 1;
+  }
+  else if (field_length == 64 ? (nr >= 18446744073709551616.0) : (nr > (double) max_val))
+  {
+    set_warning(Sql_condition::WARN_LEVEL_WARN, ER_WARN_DATA_OUT_OF_RANGE, 1);
+    value= max_val;
+    error= 1;
+  }
+  else
+  {
+    value= (ulonglong) nr;
+  }
+
+  return Field_bit::store((longlong) value, TRUE) || error;
 }
 
 

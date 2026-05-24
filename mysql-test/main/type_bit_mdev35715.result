@@ -1,0 +1,24 @@
+# MDEV-35715: UBSAN runtime error in Field_bit::store on INSERT
+CREATE TABLE t1 (c BIT(1));
+INSERT INTO t1 VALUES (1e+19);
+ERROR 22003: Out of range value for column 'c' at row 1
+SELECT HEX(c) FROM t1;
+HEX(c)
+DELETE FROM t1;
+# check truncation/rounding behaviour
+INSERT INTO t1 VALUES (0.1);
+SELECT HEX(c) FROM t1;
+HEX(c)
+0
+DELETE FROM t1;
+INSERT INTO t1 VALUES (0.9);
+SELECT HEX(c) FROM t1;
+HEX(c)
+1
+DELETE FROM t1;
+INSERT INTO t1 VALUES (1.0);
+SELECT HEX(c) FROM t1;
+HEX(c)
+1
+DELETE FROM t1;
+DROP TABLE t1;
